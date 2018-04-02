@@ -8,4 +8,5 @@ add_project_arguments(cc.get_supported_arguments(['-Wall']), language: 'c')
 
 executable('ltree', 'ltree.c',
     dependencies: dependency('libarchive'),
+    include_directories: include_directories('deps'),
 )

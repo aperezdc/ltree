@@ -1,22 +1,29 @@
 /*
- * ftree.c
+ * ltree.c
  * Copyright (C) 2018 Adrian Perez <aperez@igalia.com>
  *
  * Distributed under terms of the MIT license.
  */
 
-#include "util.h"
+#define _GNU_SOURCE 1
+
+#include "autocleanup/autocleanup.h"
 
 #include <archive.h>
 #include <archive_entry.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
+#define length_of(_arr)  (sizeof (_arr) / sizeof ((_arr) [0]))
 
 // These are set as result from command line parsing.
+static int opt_prefix_fd = AT_FDCWD;
 static int opt_print_separator = '\n';
 
 typedef struct archive ArchiveRead;
@@ -24,10 +31,15 @@ typedef struct archive_entry ArchiveEntry;
 
 PTR_AUTO_DEFINE (ArchiveRead, archive_read_free)
 
+typedef int DirFd;
+HANDLE_AUTO_DEFINE (DirFd, close, AT_FDCWD);
+
 
 enum {
-    ENTRY_OK   = 0,
-    ENTRY_SKIP = ENOENT,
+    ENTRY_OK = 0,
+    ENTRY_SKIP,
+    ENTRY_WARNING,
+    ENTRY_ERROR,
 };
 
 
@@ -43,20 +55,24 @@ struct entry_action {
 
 
 static int
-entry_check_ok (struct archive_entry *e, void *d)
-{
-    (void) e;
-    (void) d;
-    return ENTRY_OK;
-}
-
-
-static int
 entry_check_exists (struct archive_entry *e, void *d)
 {
     (void) d;
-    // TODO
-    return ENTRY_OK;
+
+    const char *e_path = archive_entry_pathname (e);
+
+    struct stat sb;
+    int ret = fstatat (opt_prefix_fd, e_path, &sb, AT_SYMLINK_NOFOLLOW);
+    if (ret == 0)
+        return ENTRY_OK;
+
+    switch ((ret = errno)) {
+        case ENOENT:
+        case ENOTDIR:
+            return ENTRY_SKIP;
+        default:
+            return -errno;
+    }
 }
 
 
@@ -79,9 +95,65 @@ entry_check (struct archive_entry *e, void *d)
 {
     (void) d;
 
-    // TODO
+    struct stat sb;
+    const char *e_path = archive_entry_pathname (e);
+    if (fstatat (opt_prefix_fd, e_path, &sb, AT_SYMLINK_NOFOLLOW) == -1) {
+        int ret = errno;
+        switch (ret) {
+            case ENOENT:
+            case ENOTDIR:
+                fprintf (stderr, "%s: missing\n", e_path);
+                return ENTRY_WARNING;
+            default:
+                return -errno;
+        }
+    }
 
-    return ENTRY_OK;
+    __auto_type *e_sb = archive_entry_stat (e);
+    __auto_type ret = ENTRY_OK;
+
+    if (e_sb->st_mode != sb.st_mode) {
+        // TODO: Print modes in a human-friendly format.
+        fprintf (stderr, "%s: expected mode %#lx (got %#lx)\n",
+                 e_path, (long) e_sb->st_mode, (long) sb.st_mode);
+        ret = ENTRY_WARNING;
+    }
+
+    if (e_sb->st_uid != sb.st_uid) {
+        fprintf (stderr, "%s: expected uid %zu (got %zu)\n",
+                 e_path, (size_t) e_sb->st_uid, (size_t) sb.st_uid);
+        ret = ENTRY_WARNING;
+    }
+
+    if (e_sb->st_gid != sb.st_gid) {
+        fprintf (stderr, "%s: expected gid %zd (got %zd)\n",
+                 e_path, (size_t) e_sb->st_gid, (size_t) sb.st_gid);
+        ret = ENTRY_WARNING;
+    }
+
+    /*
+     * TODO: There should there be some specific checks for device nodes.
+     */
+    if (!S_ISREG(e_sb->st_mode))
+        return ret;
+
+    if (e_sb->st_size != sb.st_size) {
+        fprintf (stderr, "%s: expected size %zu (got %zu)\n",
+                 e_path, e_sb->st_size, sb.st_size);
+        ret = ENTRY_WARNING;
+    }
+
+    /*
+     * TODO: Honor subsecond time resolutions.
+     * Note that atime/ctime are not present in the mtree format.
+     */
+    if (e_sb->st_mtime != sb.st_mtime) {
+        fprintf (stderr, "%s: expected mtime %zu (got %zu)\n",
+                 e_path, e_sb->st_mtime, sb.st_mtime);
+        ret = ENTRY_WARNING;
+    }
+
+    return ret;
 }
 
 
@@ -107,12 +179,10 @@ enum action {
 static const struct entry_action s_entry_actions[] = {
     [ACTION_PRINT] = {
         .name = "print",
-        .check = entry_check_ok,
         .action = entry_print,
     },
     [ACTION_CHECK] = {
         .name = "check",
-        .check = entry_check_exists,
         .action = entry_check,
     },
     [ACTION_REMOVE] = {
@@ -126,7 +196,7 @@ static const struct entry_action s_entry_actions[] = {
 static int
 entry_action_apply (const struct entry_action *ea, ArchiveEntry *e)
 {
-    int check = (*ea->check) (e, ea->data);
+    int check = (ea->check) ? (*ea->check) (e, ea->data) : ENTRY_OK;
     switch (check) {
         case ENTRY_SKIP:
             return ENTRY_OK;
@@ -155,11 +225,13 @@ main (int argc, char **argv)
 {
     enum action opt_action = ACTION_UNKNOWN;
     _Bool opt_verbose = false;
+    char *opt_prefix = NULL;
 
     ptr_auto(ArchiveRead) a = NULL;
+    handle_auto(DirFd) prefix_fd = AT_FDCWD;
 
     int opt;
-    while ((opt = getopt (argc, argv, "lCR0v:h")) != -1) {
+    while ((opt = getopt (argc, argv, "lCR0vp:h")) != -1) {
         switch (opt) {
             case '0':
                 opt_print_separator = '\0';
@@ -184,6 +256,10 @@ main (int argc, char **argv)
                 opt_verbose = true;
                 break;
 
+            case 'p':
+                opt_prefix = optarg;
+                break;
+
             case 'h':
                 fprintf (stderr, "Usage: %s [-lCR] [-0v] [-p path] < mtree\n", argv[0]);
                 return EXIT_SUCCESS;
@@ -195,6 +271,15 @@ main (int argc, char **argv)
 
     if (opt_action == ACTION_UNKNOWN)
         opt_action = ACTION_PRINT;
+
+    if (opt_action != ACTION_PRINT && opt_prefix) {
+        opt_prefix_fd = prefix_fd = open (opt_prefix, O_PATH | O_DIRECTORY, 0);
+        if (opt_prefix_fd < 0) {
+            fprintf (stderr, "%s: error opening '%s': %s\n",
+                     argv[0], opt_prefix, strerror (errno));
+            return EXIT_FAILURE;
+        }
+    }
 
     const struct entry_action *entry_actions[2] = {
         &s_entry_actions[opt_action],
@@ -208,21 +293,28 @@ main (int argc, char **argv)
     if (archive_read_open_FILE (a, stdin) != ARCHIVE_OK)
         goto beach;
 
+    int exit_code = EXIT_SUCCESS;
     ArchiveEntry *e = NULL;
+
     for (;;) {
         switch (archive_read_next_header (a, &e)) {
             case ARCHIVE_WARN:
                 fprintf (stderr, "Warning: %s\n", archive_error_string (a));
+                exit_code = EXIT_FAILURE;
                 // fall-through
             case ARCHIVE_OK:
                 for (unsigned i = 0; i < length_of (entry_actions); i++) {
                     if (entry_actions[i]) {
                         int ret = entry_action_apply (entry_actions[i], e);
-                        if (ret) {
-                            const char *errmsg = strerror ((ret < 0) ? -ret : ret);
-                            const char *errlvl = (ret < 0) ? "error" : "warning";
-                            fprintf (stderr, "%s: %s: %s\n", argv[0], errlvl, errmsg);
-                            if (ret < 0) goto beach;
+                        if (ret < 0) {
+                            fprintf (stderr, "%s: error: %s\n", argv[0], strerror (-ret));
+                            goto end;
+                        } else if (ret == ENTRY_ERROR) {
+                            ret = EXIT_FAILURE;
+                            goto end;
+                        } else if (ret != 0) {
+                            /* Warning, operation may continue. */
+                            ret = EXIT_FAILURE;
                         }
                     }
                 }
@@ -238,8 +330,7 @@ main (int argc, char **argv)
         }
     }
 end:
-
-    return EXIT_SUCCESS;
+    return exit_code;
 
 beach:
     fprintf (stderr, "%s: error: %s\n", argv[0], archive_error_string (a));

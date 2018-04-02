@@ -1,14 +1,12 @@
 /*
- * util.h
+ * autocleanup.h
  * Copyright (C) 2018 Adrian Perez <aperez@igalia.com>
  *
  * Distributed under terms of the MIT license.
  */
 
-#ifndef UTIL_H
-#define UTIL_H
-
-#define length_of(_array)  (sizeof (_array) / sizeof ((_array)[0]))
+#ifndef AUTOCLEANUP_H
+#define AUTOCLEANUP_H
 
 #define _AUTO_CLEANUP(_func) __attribute__((cleanup(_func)))
 
@@ -26,12 +24,15 @@
 
 #define ptr_autofree _PTR_AUTO_CLEANUP(_ptr_auto_generic_free)
 
+#ifndef AUTOCLEANUP_FREE_FUNC
+#define AUTOCLEANUP_FREE_FUNC free
 extern void free (void*);
+#endif /* !AUTOCLEANUP_FREE_FUNC */
 
 static inline void
 _ptr_auto_generic_free (void **ptr)
 {
-    if (ptr) free (*ptr);
+    if (ptr) AUTOCLEANUP_FREE_FUNC (*ptr);
 }
 
 
@@ -83,6 +84,13 @@ ptr_steal (void *pp)
         }                                                  \
     } while (0)
 
+#define handle_steal(_handle_ptr, _nil_value)  ({ \
+        __auto_type handle_ptr = (_handle_ptr);   \
+        __auto_type handle = *handle_ptr;         \
+        *handle_ptr = (_nil_value);               \
+        handle;                                   \
+    })
+
 #define ptr_clear(_pp, _func)  handle_clear ((_pp), (_func), ((void*)0))
 
-#endif /* !UTIL_H */
+#endif /* !AUTOCLEANUP_H */
