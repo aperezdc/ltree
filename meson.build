@@ -6,6 +6,27 @@ project('ltree', 'c',
 cc = meson.get_compiler('c')
 add_project_arguments(cc.get_supported_arguments(['-Wall']), language: 'c')
 
+python_snippet = '''
+import sys, subprocess
+subprocess.run(executable=sys.argv[1],
+    args=[sys.argv[1]],
+    stdin=open(sys.argv[2], "rb"),
+    stdout=open(sys.argv[3], "wb"),
+    shell=False)
+'''
+
+scdoc = find_program('scdoc', required: false)
+if scdoc.found()
+    python = import('python3').find_python()
+    manpage = custom_target('manpage',
+        build_always: true,
+        input: 'ltree.1.scd',
+        output: 'ltree.1',
+        command: [python, '-c', python_snippet, scdoc, '@INPUT@', '@OUTPUT@'],
+    )
+    install_man(manpage.full_path())
+endif
+
 executable('ltree', 'ltree.c',
     dependencies: dependency('libarchive'),
     include_directories: include_directories('deps'),
