@@ -109,7 +109,7 @@ entry_check (struct archive_entry *e, void *d)
         }
     }
 
-    __auto_type *e_sb = archive_entry_stat (e);
+    __auto_type e_sb = archive_entry_stat (e);
     __auto_type ret = ENTRY_OK;
 
     if (e_sb->st_mode != sb.st_mode) {
