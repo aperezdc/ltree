@@ -15,7 +15,7 @@ subprocess.run(executable=sys.argv[1],
     shell=False)
 '''
 
-scdoc = find_program('scdoc', required: false)
+scdoc = find_program('scdoc', required: false, native: true)
 if scdoc.found()
     python = import('python3').find_python()
     manpage = custom_target('manpage',
@@ -23,8 +23,9 @@ if scdoc.found()
         input: 'ltree.1.scd',
         output: 'ltree.1',
         command: [python, '-c', python_snippet, scdoc, '@INPUT@', '@OUTPUT@'],
+        install: true,
+        install_dir: join_paths(get_option('mandir'), 'man1'),
     )
-    install_man(manpage.full_path())
 endif
 
 executable('ltree', 'ltree.c',
