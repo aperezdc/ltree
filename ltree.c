@@ -208,7 +208,7 @@ entry_action_apply (const struct entry_action *ea, ArchiveEntry *e)
 }
 
 
-static inline _Bool
+static inline bool
 set_action (enum action *act, enum action newact)
 {
     if (*act == ACTION_UNKNOWN) {
@@ -224,7 +224,7 @@ int
 main (int argc, char **argv)
 {
     enum action opt_action = ACTION_UNKNOWN;
-    _Bool opt_verbose = false;
+    bool opt_verbose = false;
     char *opt_prefix = NULL;
 
     ptr_auto(ArchiveRead) a = NULL;
